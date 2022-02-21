@@ -926,6 +926,99 @@ void ShowDemo_MarkersAndText() {
     }
 }
 
+void ShowDemo_PlotColors() {
+    // Lines
+    {
+        static float xs1[1001], ys1[1001];
+        ImU32 cs1[1001];
+        for (int i = 0; i < 1001; ++i) {
+            xs1[i] = i * 0.001f;
+            ys1[i] = 0.5f + 0.5f * sinf(50 * (xs1[i] + (float)ImGui::GetTime() / 10));
+            ImVec4 lineColor = ImPlot::SampleColormap(ys1[i], ImPlotColormap_Spectral);
+            lineColor.w = 1 - powf(1 - (i * 0.001f), 4);
+            cs1[i] = ImGui::GetColorU32(lineColor);
+        }
+        static double xs2[11], ys2[11];
+        ImU32 cls2[11], cms2[11];
+        for (int i = 0; i < 11; ++i) {
+            xs2[i] = i * 0.1f;
+            ys2[i] = xs2[i] * xs2[i];
+            cls2[i] = ImGui::GetColorU32(ImPlot::SampleColormap(float(ys2[i]), ImPlotColormap_Twilight));
+            cms2[i] = ImGui::GetColorU32(ImPlot::RandomColor());
+        }
+        if (ImPlot::BeginPlot("Line Plot with colors")) {
+            ImPlot::SetupAxes("x", "f(x)");
+            ImVec4 s1Color = ImPlot::SampleColormap(0.5f, ImPlotColormap_Spectral);
+            ImPlot::SetNextLineStyle(s1Color);
+            ImPlot::SetNextColorsData(ImPlotCol_Line, cs1);
+            ImPlot::PlotLine("sin(x)", xs1, ys1, 1001);
+            ImVec4 s2Color = ImPlot::SampleColormap(0.5f, ImPlotColormap_Twilight);
+            ImPlot::SetNextLineStyle(s2Color);
+            ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle);
+            ImPlot::SetNextColorsData(ImPlotCol_Line, cls2);
+            ImPlot::SetNextColorsData(ImPlotCol_MarkerFill, cms2);
+            ImPlot::SetNextColorsData(ImPlotCol_MarkerOutline, cms2);
+            ImPlot::PlotLine("x^2", xs2, ys2, 11);
+            ImPlot::EndPlot();
+        }
+    }
+    // Scatter
+    {
+        srand(0);
+        static float xs1[100], ys1[100];
+        static ImU32 cs1[1001];
+        for (int i = 0; i < 100; ++i) {
+            xs1[i] = i * 0.01f;
+            ys1[i] = xs1[i] + 0.1f * ((float)rand() / (float)RAND_MAX);
+            cs1[i] = ImGui::GetColorU32(ImPlot::SampleColormap(10 * (ys1[i] - xs1[i]), ImPlotColormap_Viridis));
+        }
+        static float xs2[50], ys2[50];
+        ImU32 cmos2[50], cmfs2[50];
+
+        for (int i = 0; i < 50; i++) {
+            xs2[i] = 0.25f + 0.2f * ((float)rand() / (float)RAND_MAX);
+            ys2[i] = 0.75f + 0.2f * ((float)rand() / (float)RAND_MAX);
+
+            ImVec4 markerOutlineColor = ImPlot::SampleColormap(((float)rand() / (float)RAND_MAX), ImPlotColormap_Plasma);
+            ImVec4 markerFillColor = ImVec4(markerOutlineColor.x, markerOutlineColor.x, markerOutlineColor.z, 0.5);
+            cmfs2[i] = ImGui::GetColorU32(markerFillColor);
+            cmos2[i] = ImGui::GetColorU32(markerOutlineColor);
+        }
+
+        if (ImPlot::BeginPlot("Scatter Plot with colors")) {
+            ImVec4 s1Color = ImPlot::SampleColormap(0.5f, ImPlotColormap_Viridis);
+            ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 4, s1Color, IMPLOT_AUTO, s1Color);
+            ImPlot::SetNextColorsData(ImPlotCol_MarkerOutline, cs1);
+            ImPlot::SetNextColorsData(ImPlotCol_MarkerFill, cs1);
+            ImPlot::PlotScatter("Data 1", xs1, ys1, 100);
+
+            ImVec4 s2Color = ImPlot::SampleColormap(0.5f, ImPlotColormap_Plasma);
+            ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, 6, s2Color, IMPLOT_AUTO, s2Color);
+            ImPlot::SetNextColorsData(ImPlotCol_MarkerOutline, cmos2);
+            ImPlot::SetNextColorsData(ImPlotCol_MarkerFill, cmfs2);
+            ImPlot::PlotScatter("Data 2", xs2, ys2, 50);
+
+            ImPlot::EndPlot();
+        }
+    }
+
+    // Infinite lines
+    {
+        static double vals[] = { 0.25, 0.5, 0.75 };
+        static ImU32 colors[] = { ImGui::GetColorU32(ImPlot::RandomColor()), ImGui::GetColorU32(ImPlot::RandomColor()), ImGui::GetColorU32(ImPlot::RandomColor()) };
+        if (ImPlot::BeginPlot("##Infinite with colors")) {
+            ImPlot::SetupAxes(NULL, NULL, ImPlotAxisFlags_NoInitialFit, ImPlotAxisFlags_NoInitialFit);
+            ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 0.5));
+            ImPlot::SetNextColorsData(ImPlotCol_Line, colors);
+            ImPlot::PlotVLines("VLines", vals, 3);
+            ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 0.5));
+            ImPlot::SetNextColorsData(ImPlotCol_Line, colors);
+            ImPlot::PlotHLines("HLines", vals, 3);
+            ImPlot::EndPlot();
+        }
+    }
+}
+
 void ShowDemo_LogAxes() {
     static double xs[1001], ys1[1001], ys2[1001], ys3[1001];
     for (int i = 0; i < 1001; ++i) {
@@ -2032,6 +2125,8 @@ void ShowDemoWindow(bool* p_open) {
                 ShowDemo_Images();
             if (ImGui::CollapsingHeader("Markers and Text"))
                 ShowDemo_MarkersAndText();
+            if (ImGui::CollapsingHeader("Plot Colors"))
+                ShowDemo_PlotColors();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Subplots")) {

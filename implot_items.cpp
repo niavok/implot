@@ -122,6 +122,13 @@ void SetNextLineStyle(const ImVec4& col, float weight) {
     gp.NextItemData.LineWeight             = weight;
 }
 
+void SetNextColorsData(ImPlotCol_ target, ImU32* const& colors, int stride)
+{
+    ImPlotContext& gp = *GImPlot;
+    gp.NextItemData.ColorsData[target] = colors;
+    gp.NextItemData.ColorsDataStride[target] = stride;
+}
+
 void SetNextFillStyle(const ImVec4& col, float alpha) {
     ImPlotContext& gp = *GImPlot;
     gp.NextItemData.Colors[ImPlotCol_Fill] = col;
@@ -564,11 +571,12 @@ IMPLOT_INLINE void PrimRectFilled(const ImVec2& Pmin, const ImVec2& Pmax, ImU32 
 
 template <typename TGetter, typename TTransformer>
 struct LineStripRenderer {
-    IMPLOT_INLINE LineStripRenderer(const TGetter& getter, const TTransformer& transformer, ImU32 col, float weight) :
+    IMPLOT_INLINE LineStripRenderer(const TGetter& getter, const TTransformer& transformer, const ImU32* col_ptr, int col_stride, float weight) :
         Getter(getter),
         Transformer(transformer),
         Prims(Getter.Count - 1),
-        Col(col),
+        ColPtr(col_ptr),
+        ColStride(col_stride),
         HalfWeight(weight/2)
     {
         P1 = Transformer(Getter(0));
@@ -579,6 +587,8 @@ struct LineStripRenderer {
             P1 = P2;
             return false;
         }
+
+        ImU32 Col = *(ImU32*) ((unsigned char*) (ColPtr)+prim * ColStride);
         PrimLine(P1,P2,HalfWeight,Col,DrawList,uv);
         P1 = P2;
         return true;
@@ -586,7 +596,8 @@ struct LineStripRenderer {
     const TGetter& Getter;
     const TTransformer& Transformer;
     const int Prims;
-    const ImU32 Col;
+    const ImU32* ColPtr;
+    const int ColStride;
     const float HalfWeight;
     mutable ImVec2 P1;
     static const int IdxConsumed = 6;
@@ -595,12 +606,13 @@ struct LineStripRenderer {
 
 template <typename TGetter1, typename TGetter2, typename TTransformer>
 struct LineSegmentsRenderer {
-    IMPLOT_INLINE LineSegmentsRenderer(const TGetter1& getter1, const TGetter2& getter2, const TTransformer& transformer, ImU32 col, float weight) :
+    IMPLOT_INLINE LineSegmentsRenderer(const TGetter1& getter1, const TGetter2& getter2, const TTransformer& transformer, ImU32 const* col_ptr, int col_stride, float weight) :
         Getter1(getter1),
         Getter2(getter2),
         Transformer(transformer),
         Prims(ImMin(Getter1.Count, Getter2.Count)),
-        Col(col),
+        ColPtr(col_ptr),
+        ColStride(col_stride),
         HalfWeight(weight/2)
     {}
     IMPLOT_INLINE bool operator()(ImDrawList& DrawList, const ImRect& cull_rect, const ImVec2& uv, int prim) const {
@@ -608,6 +620,7 @@ struct LineSegmentsRenderer {
         ImVec2 P2 = Transformer(Getter2(prim));
         if (!cull_rect.Overlaps(ImRect(ImMin(P1, P2), ImMax(P1, P2))))
             return false;
+        ImU32 Col = *(ImU32*)((unsigned char*)(ColPtr)+prim * ColStride);
         PrimLine(P1,P2,HalfWeight,Col,DrawList,uv);
         return true;
     }
@@ -615,7 +628,8 @@ struct LineSegmentsRenderer {
     const TGetter2& Getter2;
     const TTransformer& Transformer;
     const int Prims;
-    const ImU32 Col;
+    const ImU32* ColPtr;
+    const int ColStride;
     const float HalfWeight;
     static const int IdxConsumed = 6;
     static const int VtxConsumed = 4;
@@ -757,36 +771,40 @@ IMPLOT_INLINE void RenderPrimitives(const Renderer& renderer, ImDrawList& DrawLi
 }
 
 template <typename Getter, typename Transformer>
-IMPLOT_INLINE void RenderLineStrip(const Getter& getter, const Transformer& transformer, ImDrawList& DrawList, float line_weight, ImU32 col) {
+IMPLOT_INLINE void RenderLineStrip(const Getter& getter, const Transformer& transformer, ImDrawList& DrawList, float line_weight, ImU32 const* col_ptr, int col_stride) {
     ImPlotContext& gp = *GImPlot;
     if (ImHasFlag(gp.CurrentPlot->Flags, ImPlotFlags_AntiAliased) || gp.Style.AntiAliasedLines) {
         ImVec2 p1 = transformer(getter(0));
         for (int i = 1; i < getter.Count; ++i) {
             ImVec2 p2 = transformer(getter(i));
-            if (gp.CurrentPlot->PlotRect.Overlaps(ImRect(ImMin(p1, p2), ImMax(p1, p2))))
+            if (gp.CurrentPlot->PlotRect.Overlaps(ImRect(ImMin(p1, p2), ImMax(p1, p2)))) {
+                ImU32 col = *(ImU32*)((unsigned char*)(col_ptr)+(i - 1) * col_stride);
                 DrawList.AddLine(p1, p2, col, line_weight);
+            }
             p1 = p2;
         }
     }
     else {
-        RenderPrimitives(LineStripRenderer<Getter,Transformer>(getter, transformer, col, line_weight), DrawList, gp.CurrentPlot->PlotRect);
+        RenderPrimitives(LineStripRenderer<Getter,Transformer>(getter, transformer, col_ptr, col_stride, line_weight), DrawList, gp.CurrentPlot->PlotRect);
     }
 }
 
 template <typename Getter1, typename Getter2, typename Transformer>
-IMPLOT_INLINE void RenderLineSegments(const Getter1& getter1, const Getter2& getter2, const Transformer& transformer, ImDrawList& DrawList, float line_weight, ImU32 col) {
+IMPLOT_INLINE void RenderLineSegments(const Getter1& getter1, const Getter2& getter2, const Transformer& transformer, ImDrawList& DrawList, float line_weight, const ImU32* col_ptr, int col_stride) {
     ImPlotContext& gp = *GImPlot;
     if (ImHasFlag(gp.CurrentPlot->Flags, ImPlotFlags_AntiAliased) || gp.Style.AntiAliasedLines) {
         int I = ImMin(getter1.Count, getter2.Count);
         for (int i = 0; i < I; ++i) {
             ImVec2 p1 = transformer(getter1(i));
             ImVec2 p2 = transformer(getter2(i));
-            if (gp.CurrentPlot->PlotRect.Overlaps(ImRect(ImMin(p1, p2), ImMax(p1, p2))))
+            if (gp.CurrentPlot->PlotRect.Overlaps(ImRect(ImMin(p1, p2), ImMax(p1, p2)))) {
+                ImU32 col = *(ImU32*)((unsigned char*)(col_ptr)+i * col_stride);
                 DrawList.AddLine(p1, p2, col, line_weight);
+            }
         }
     }
     else {
-        RenderPrimitives(LineSegmentsRenderer<Getter1,Getter2,Transformer>(getter1, getter2, transformer, col, line_weight), DrawList, gp.CurrentPlot->PlotRect);
+        RenderPrimitives(LineSegmentsRenderer<Getter1,Getter2,Transformer>(getter1, getter2, transformer, col_ptr, col_stride, line_weight), DrawList, gp.CurrentPlot->PlotRect);
     }
 }
 
@@ -898,7 +916,7 @@ IMPLOT_INLINE void RenderMarkerCross(ImDrawList& DrawList, const ImVec2& c, floa
 }
 
 template <typename Transformer, typename Getter>
-IMPLOT_INLINE void RenderMarkers(Getter getter, Transformer transformer, ImDrawList& DrawList, ImPlotMarker marker, float size, bool rend_mk_line, ImU32 col_mk_line, float weight, bool rend_mk_fill, ImU32 col_mk_fill) {
+IMPLOT_INLINE void RenderMarkers(Getter getter, Transformer transformer, ImDrawList& DrawList, ImPlotMarker marker, float size, bool rend_mk_line, const ImU32* col_mk_line_ptr, int col_mk_line_stride, float weight, bool rend_mk_fill, const ImU32* col_mk_fill_ptr, int col_mk_fill_stride) {
     static void (*marker_table[ImPlotMarker_COUNT])(ImDrawList&, const ImVec2&, float s, bool, ImU32, bool, ImU32, float) = {
         RenderMarkerCircle,
         RenderMarkerSquare,
@@ -916,7 +934,11 @@ IMPLOT_INLINE void RenderMarkers(Getter getter, Transformer transformer, ImDrawL
     for (int i = 0; i < getter.Count; ++i) {
         ImVec2 c = transformer(getter(i));
         if (c.x >= rect.Min.x && c.y >= rect.Min.y && c.x <= rect.Max.x && c.y <= rect.Max.y)
+        if (c.x >= rect.Min.x && c.y >= rect.Min.y && c.x <= rect.Max.x && c.y <= rect.Max.y) {
+            ImU32 col_mk_line = *(ImU32*)((unsigned char*)(col_mk_line_ptr)+i * col_mk_line_stride);
+            ImU32 col_mk_fill = *(ImU32*)((unsigned char*)(col_mk_fill_ptr)+i * col_mk_fill_stride);
             marker_table[marker](DrawList, c, size, rend_mk_line, col_mk_line, rend_mk_fill, col_mk_fill, weight);
+        }
     }
 }
 
@@ -936,12 +958,26 @@ IMPLOT_INLINE void PlotLineEx(const char* label_id, const Getter& getter) {
         const ImPlotNextItemData& s = GetItemData();
         ImDrawList& DrawList = *GetPlotDrawList();
         if (getter.Count > 1 && s.RenderLine) {
-            const ImU32 col_line    = ImGui::GetColorU32(s.Colors[ImPlotCol_Line]);
+            const ImU32 static_col_line = ImGui::GetColorU32(s.Colors[ImPlotCol_Line]);
+            int col_line_stride;
+            const ImU32* col_line_ptr;
+
+            if (s.ColorsData[ImPlotCol_Line] == nullptr)
+            {
+                col_line_ptr = &static_col_line;
+                col_line_stride = 0;
+            }
+            else
+            {
+                col_line_ptr = s.ColorsData[ImPlotCol_Line];
+                col_line_stride = s.ColorsDataStride[ImPlotCol_Line];
+            }
+
             switch (GetCurrentScale()) {
-                case ImPlotScale_LinLin: RenderLineStrip(getter, TransformerLinLin(), DrawList, s.LineWeight, col_line); break;
-                case ImPlotScale_LogLin: RenderLineStrip(getter, TransformerLogLin(), DrawList, s.LineWeight, col_line); break;
-                case ImPlotScale_LinLog: RenderLineStrip(getter, TransformerLinLog(), DrawList, s.LineWeight, col_line); break;
-                case ImPlotScale_LogLog: RenderLineStrip(getter, TransformerLogLog(), DrawList, s.LineWeight, col_line); break;
+                case ImPlotScale_LinLin: RenderLineStrip(getter, TransformerLinLin(), DrawList, s.LineWeight, col_line_ptr, col_line_stride); break;
+                case ImPlotScale_LogLin: RenderLineStrip(getter, TransformerLogLin(), DrawList, s.LineWeight, col_line_ptr, col_line_stride); break;
+                case ImPlotScale_LinLog: RenderLineStrip(getter, TransformerLinLog(), DrawList, s.LineWeight, col_line_ptr, col_line_stride); break;
+                case ImPlotScale_LogLog: RenderLineStrip(getter, TransformerLogLog(), DrawList, s.LineWeight, col_line_ptr, col_line_stride); break;
             }
         }
         // render markers
@@ -949,13 +985,41 @@ IMPLOT_INLINE void PlotLineEx(const char* label_id, const Getter& getter) {
             // uncomment lines below to render markers over plot rect border
             // PopPlotClipRect();
             // PushPlotClipRect(s.MarkerSize);
-            const ImU32 col_line = ImGui::GetColorU32(s.Colors[ImPlotCol_MarkerOutline]);
-            const ImU32 col_fill = ImGui::GetColorU32(s.Colors[ImPlotCol_MarkerFill]);
+            const ImU32 static_col_outlineline = ImGui::GetColorU32(s.Colors[ImPlotCol_MarkerOutline]);
+            int col_outline_stride;
+            const ImU32* col_outline_ptr;
+
+            if (s.ColorsData[ImPlotCol_MarkerOutline] == nullptr)
+            {
+                col_outline_ptr = &static_col_outlineline;
+                col_outline_stride = 0;
+            }
+            else
+            {
+                col_outline_ptr = s.ColorsData[ImPlotCol_MarkerOutline];
+                col_outline_stride = s.ColorsDataStride[ImPlotCol_MarkerOutline];
+            }
+
+            const ImU32 static_col_fill = ImGui::GetColorU32(s.Colors[ImPlotCol_MarkerFill]);
+            int col_fill_stride;
+            const ImU32* col_fill_ptr;
+
+            if (s.ColorsData[ImPlotCol_MarkerFill] == nullptr)
+            {
+                col_fill_ptr = &static_col_fill;
+                col_fill_stride = 0;
+            }
+            else
+            {
+                col_fill_ptr = s.ColorsData[ImPlotCol_MarkerFill];
+                col_fill_stride = s.ColorsDataStride[ImPlotCol_MarkerFill];
+            }
+
             switch (GetCurrentScale()) {
-                case ImPlotScale_LinLin: RenderMarkers(getter, TransformerLinLin(), DrawList, s.Marker, s.MarkerSize, s.RenderMarkerLine, col_line, s.MarkerWeight, s.RenderMarkerFill, col_fill); break;
-                case ImPlotScale_LogLin: RenderMarkers(getter, TransformerLogLin(), DrawList, s.Marker, s.MarkerSize, s.RenderMarkerLine, col_line, s.MarkerWeight, s.RenderMarkerFill, col_fill); break;
-                case ImPlotScale_LinLog: RenderMarkers(getter, TransformerLinLog(), DrawList, s.Marker, s.MarkerSize, s.RenderMarkerLine, col_line, s.MarkerWeight, s.RenderMarkerFill, col_fill); break;
-                case ImPlotScale_LogLog: RenderMarkers(getter, TransformerLogLog(), DrawList, s.Marker, s.MarkerSize, s.RenderMarkerLine, col_line, s.MarkerWeight, s.RenderMarkerFill, col_fill); break;
+                case ImPlotScale_LinLin: RenderMarkers(getter, TransformerLinLin(), DrawList, s.Marker, s.MarkerSize, s.RenderMarkerLine, col_outline_ptr, col_outline_stride, s.MarkerWeight, s.RenderMarkerFill, col_fill_ptr, col_fill_stride); break;
+                case ImPlotScale_LogLin: RenderMarkers(getter, TransformerLogLin(), DrawList, s.Marker, s.MarkerSize, s.RenderMarkerLine, col_outline_ptr, col_outline_stride, s.MarkerWeight, s.RenderMarkerFill, col_fill_ptr, col_fill_stride); break;
+                case ImPlotScale_LinLog: RenderMarkers(getter, TransformerLinLog(), DrawList, s.Marker, s.MarkerSize, s.RenderMarkerLine, col_outline_ptr, col_outline_stride, s.MarkerWeight, s.RenderMarkerFill, col_fill_ptr, col_fill_stride); break;
+                case ImPlotScale_LogLog: RenderMarkers(getter, TransformerLogLog(), DrawList, s.Marker, s.MarkerSize, s.RenderMarkerLine, col_outline_ptr, col_outline_stride, s.MarkerWeight, s.RenderMarkerFill, col_fill_ptr, col_fill_stride); break;
             }
         }
         EndItem();
@@ -1024,13 +1088,41 @@ IMPLOT_INLINE void PlotScatterEx(const char* label_id, const Getter& getter) {
             // uncomment lines below to render markers over plot rect border
             // PopPlotClipRect();
             // PushPlotClipRect(s.MarkerSize);
-            const ImU32 col_line = ImGui::GetColorU32(s.Colors[ImPlotCol_MarkerOutline]);
-            const ImU32 col_fill = ImGui::GetColorU32(s.Colors[ImPlotCol_MarkerFill]);
+            const ImU32 static_col_outline = ImGui::GetColorU32(s.Colors[ImPlotCol_MarkerOutline]);
+            int col_outline_stride;
+            const ImU32* col_outline_ptr;
+
+            if (s.ColorsData[ImPlotCol_MarkerOutline] == nullptr)
+            {
+                col_outline_ptr = &static_col_outline;
+                col_outline_stride = 0;
+            }
+            else
+            {
+                col_outline_ptr = s.ColorsData[ImPlotCol_MarkerOutline];
+                col_outline_stride = s.ColorsDataStride[ImPlotCol_MarkerOutline];
+            }
+
+            const ImU32 static_col_fill = ImGui::GetColorU32(s.Colors[ImPlotCol_MarkerFill]);
+            int col_fill_stride;
+            const ImU32* col_fill_ptr;
+
+            if (s.ColorsData[ImPlotCol_MarkerFill] == nullptr)
+            {
+                col_fill_ptr = &static_col_fill;
+                col_fill_stride = 0;
+            }
+            else
+            {
+                col_fill_ptr = s.ColorsData[ImPlotCol_MarkerFill];
+                col_fill_stride = s.ColorsDataStride[ImPlotCol_MarkerFill];
+            }
+
             switch (GetCurrentScale()) {
-                case ImPlotScale_LinLin: RenderMarkers(getter, TransformerLinLin(), DrawList, marker, s.MarkerSize, s.RenderMarkerLine, col_line, s.MarkerWeight, s.RenderMarkerFill, col_fill); break;
-                case ImPlotScale_LogLin: RenderMarkers(getter, TransformerLogLin(), DrawList, marker, s.MarkerSize, s.RenderMarkerLine, col_line, s.MarkerWeight, s.RenderMarkerFill, col_fill); break;
-                case ImPlotScale_LinLog: RenderMarkers(getter, TransformerLinLog(), DrawList, marker, s.MarkerSize, s.RenderMarkerLine, col_line, s.MarkerWeight, s.RenderMarkerFill, col_fill); break;
-                case ImPlotScale_LogLog: RenderMarkers(getter, TransformerLogLog(), DrawList, marker, s.MarkerSize, s.RenderMarkerLine, col_line, s.MarkerWeight, s.RenderMarkerFill, col_fill); break;
+                case ImPlotScale_LinLin: RenderMarkers(getter, TransformerLinLin(), DrawList, marker, s.MarkerSize, s.RenderMarkerLine, col_outline_ptr, col_outline_stride, s.MarkerWeight, s.RenderMarkerFill, col_fill_ptr, col_fill_stride); break;
+                case ImPlotScale_LogLin: RenderMarkers(getter, TransformerLogLin(), DrawList, marker, s.MarkerSize, s.RenderMarkerLine, col_outline_ptr, col_outline_stride, s.MarkerWeight, s.RenderMarkerFill, col_fill_ptr, col_fill_stride); break;
+                case ImPlotScale_LinLog: RenderMarkers(getter, TransformerLinLog(), DrawList, marker, s.MarkerSize, s.RenderMarkerLine, col_outline_ptr, col_outline_stride, s.MarkerWeight, s.RenderMarkerFill, col_fill_ptr, col_fill_stride); break;
+                case ImPlotScale_LogLog: RenderMarkers(getter, TransformerLogLog(), DrawList, marker, s.MarkerSize, s.RenderMarkerLine, col_outline_ptr, col_outline_stride, s.MarkerWeight, s.RenderMarkerFill, col_fill_ptr, col_fill_stride); break;
             }
         }
         EndItem();
@@ -1105,13 +1197,42 @@ IMPLOT_INLINE void PlotStairsEx(const char* label_id, const Getter& getter) {
         if (s.Marker != ImPlotMarker_None) {
             PopPlotClipRect();
             PushPlotClipRect(s.MarkerSize);
-            const ImU32 col_line = ImGui::GetColorU32(s.Colors[ImPlotCol_MarkerOutline]);
-            const ImU32 col_fill = ImGui::GetColorU32(s.Colors[ImPlotCol_MarkerFill]);
+
+            const ImU32 static_col_outline = ImGui::GetColorU32(s.Colors[ImPlotCol_MarkerOutline]);
+            int col_outline_stride;
+            const ImU32* col_outline_ptr;
+
+            if (s.ColorsData[ImPlotCol_MarkerOutline] == nullptr)
+            {
+                col_outline_ptr = &static_col_outline;
+                col_outline_stride = 0;
+            }
+            else
+            {
+                col_outline_ptr = s.ColorsData[ImPlotCol_MarkerOutline];
+                col_outline_stride = s.ColorsDataStride[ImPlotCol_MarkerOutline];
+            }
+
+            const ImU32 static_col_fill = ImGui::GetColorU32(s.Colors[ImPlotCol_MarkerFill]);
+            int col_fill_stride;
+            const ImU32* col_fill_ptr;
+
+            if (s.ColorsData[ImPlotCol_MarkerFill] == nullptr)
+            {
+                col_fill_ptr = &static_col_fill;
+                col_fill_stride = 0;
+            }
+            else
+            {
+                col_fill_ptr = s.ColorsData[ImPlotCol_MarkerFill];
+                col_fill_stride = s.ColorsDataStride[ImPlotCol_MarkerFill];
+            }
+
             switch (GetCurrentScale()) {
-                case ImPlotScale_LinLin: RenderMarkers(getter, TransformerLinLin(), DrawList, s.Marker, s.MarkerSize, s.RenderMarkerLine, col_line, s.MarkerWeight, s.RenderMarkerFill, col_fill); break;
-                case ImPlotScale_LogLin: RenderMarkers(getter, TransformerLogLin(), DrawList, s.Marker, s.MarkerSize, s.RenderMarkerLine, col_line, s.MarkerWeight, s.RenderMarkerFill, col_fill); break;
-                case ImPlotScale_LinLog: RenderMarkers(getter, TransformerLinLog(), DrawList, s.Marker, s.MarkerSize, s.RenderMarkerLine, col_line, s.MarkerWeight, s.RenderMarkerFill, col_fill); break;
-                case ImPlotScale_LogLog: RenderMarkers(getter, TransformerLogLog(), DrawList, s.Marker, s.MarkerSize, s.RenderMarkerLine, col_line, s.MarkerWeight, s.RenderMarkerFill, col_fill); break;
+                case ImPlotScale_LinLin: RenderMarkers(getter, TransformerLinLin(), DrawList, s.Marker, s.MarkerSize, s.RenderMarkerLine, col_outline_ptr, col_outline_stride, s.MarkerWeight, s.RenderMarkerFill, col_fill_ptr, col_fill_stride); break;
+                case ImPlotScale_LogLin: RenderMarkers(getter, TransformerLogLin(), DrawList, s.Marker, s.MarkerSize, s.RenderMarkerLine, col_outline_ptr, col_outline_stride, s.MarkerWeight, s.RenderMarkerFill, col_fill_ptr, col_fill_stride); break;
+                case ImPlotScale_LinLog: RenderMarkers(getter, TransformerLinLog(), DrawList, s.Marker, s.MarkerSize, s.RenderMarkerLine, col_outline_ptr, col_outline_stride, s.MarkerWeight, s.RenderMarkerFill, col_fill_ptr, col_fill_stride); break;
+                case ImPlotScale_LogLog: RenderMarkers(getter, TransformerLogLog(), DrawList, s.Marker, s.MarkerSize, s.RenderMarkerLine, col_outline_ptr, col_outline_stride, s.MarkerWeight, s.RenderMarkerFill, col_fill_ptr, col_fill_stride); break;
             }
         }
         EndItem();
@@ -1703,12 +1824,26 @@ IMPLOT_INLINE void PlotStemsEx(const char* label_id, const GetterM& get_mark, co
         ImDrawList& DrawList = *GetPlotDrawList();
         // render stems
         if (s.RenderLine) {
-            const ImU32 col_line = ImGui::GetColorU32(s.Colors[ImPlotCol_Line]);
+            const ImU32 static_col_line = ImGui::GetColorU32(s.Colors[ImPlotCol_Line]);
+            int col_line_stride;
+            const ImU32* col_line_ptr;
+
+            if (s.ColorsData[ImPlotCol_Line] == nullptr)
+            {
+                col_line_ptr = &static_col_line;
+                col_line_stride = 0;
+            }
+            else
+            {
+                col_line_ptr = s.ColorsData[ImPlotCol_Line];
+                col_line_stride = s.ColorsDataStride[ImPlotCol_Line];
+            }
+
             switch (GetCurrentScale()) {
-                case ImPlotScale_LinLin: RenderLineSegments(get_mark, get_base, TransformerLinLin(), DrawList, s.LineWeight, col_line); break;
-                case ImPlotScale_LogLin: RenderLineSegments(get_mark, get_base, TransformerLogLin(), DrawList, s.LineWeight, col_line); break;
-                case ImPlotScale_LinLog: RenderLineSegments(get_mark, get_base, TransformerLinLog(), DrawList, s.LineWeight, col_line); break;
-                case ImPlotScale_LogLog: RenderLineSegments(get_mark, get_base, TransformerLogLog(), DrawList, s.LineWeight, col_line); break;
+                case ImPlotScale_LinLin: RenderLineSegments(get_mark, get_base, TransformerLinLin(), DrawList, s.LineWeight, col_line_ptr, col_line_stride); break;
+                case ImPlotScale_LogLin: RenderLineSegments(get_mark, get_base, TransformerLogLin(), DrawList, s.LineWeight, col_line_ptr, col_line_stride); break;
+                case ImPlotScale_LinLog: RenderLineSegments(get_mark, get_base, TransformerLinLog(), DrawList, s.LineWeight, col_line_ptr, col_line_stride); break;
+                case ImPlotScale_LogLog: RenderLineSegments(get_mark, get_base, TransformerLogLog(), DrawList, s.LineWeight, col_line_ptr, col_line_stride); break;
             }
         }
         // render markers
@@ -1716,13 +1851,41 @@ IMPLOT_INLINE void PlotStemsEx(const char* label_id, const GetterM& get_mark, co
         if (marker != ImPlotMarker_None) {
             PopPlotClipRect();
             PushPlotClipRect(s.MarkerSize);
-            const ImU32 col_line = ImGui::GetColorU32(s.Colors[ImPlotCol_MarkerOutline]);
-            const ImU32 col_fill = ImGui::GetColorU32(s.Colors[ImPlotCol_MarkerFill]);
+
+            const ImU32 static_col_outline = ImGui::GetColorU32(s.Colors[ImPlotCol_MarkerOutline]);
+            int col_outline_stride;
+            const ImU32* col_outline_ptr;
+
+            if (s.ColorsData[ImPlotCol_MarkerOutline] == nullptr)
+            {
+                col_outline_ptr = &static_col_outline;
+                col_outline_stride = 0;
+            }
+            else
+            {
+                col_outline_ptr = s.ColorsData[ImPlotCol_MarkerOutline];
+                col_outline_stride = s.ColorsDataStride[ImPlotCol_MarkerOutline];
+            }
+
+            const ImU32 static_col_fill = ImGui::GetColorU32(s.Colors[ImPlotCol_MarkerFill]);
+            int col_fill_stride;
+            const ImU32* col_fill_ptr;
+
+            if (s.ColorsData[ImPlotCol_MarkerFill] == nullptr)
+            {
+                col_fill_ptr = &static_col_fill;
+                col_fill_stride = 0;
+            }
+            else
+            {
+                col_fill_ptr = s.ColorsData[ImPlotCol_MarkerFill];
+                col_fill_stride = s.ColorsDataStride[ImPlotCol_MarkerFill];
+            }
             switch (GetCurrentScale()) {
-                case ImPlotScale_LinLin: RenderMarkers(get_mark, TransformerLinLin(), DrawList, marker, s.MarkerSize, s.RenderMarkerLine, col_line, s.MarkerWeight, s.RenderMarkerFill, col_fill); break;
-                case ImPlotScale_LogLin: RenderMarkers(get_mark, TransformerLogLin(), DrawList, marker, s.MarkerSize, s.RenderMarkerLine, col_line, s.MarkerWeight, s.RenderMarkerFill, col_fill); break;
-                case ImPlotScale_LinLog: RenderMarkers(get_mark, TransformerLinLog(), DrawList, marker, s.MarkerSize, s.RenderMarkerLine, col_line, s.MarkerWeight, s.RenderMarkerFill, col_fill); break;
-                case ImPlotScale_LogLog: RenderMarkers(get_mark, TransformerLogLog(), DrawList, marker, s.MarkerSize, s.RenderMarkerLine, col_line, s.MarkerWeight, s.RenderMarkerFill, col_fill); break;
+			case ImPlotScale_LinLin: RenderMarkers(get_mark, TransformerLinLin(), DrawList, marker, s.MarkerSize, s.RenderMarkerLine, col_outline_ptr, col_outline_stride, s.MarkerWeight, s.RenderMarkerFill, col_fill_ptr, col_fill_stride); break;
+			case ImPlotScale_LogLin: RenderMarkers(get_mark, TransformerLogLin(), DrawList, marker, s.MarkerSize, s.RenderMarkerLine, col_outline_ptr, col_outline_stride, s.MarkerWeight, s.RenderMarkerFill, col_fill_ptr, col_fill_stride); break;
+			case ImPlotScale_LinLog: RenderMarkers(get_mark, TransformerLinLog(), DrawList, marker, s.MarkerSize, s.RenderMarkerLine, col_outline_ptr, col_outline_stride, s.MarkerWeight, s.RenderMarkerFill, col_fill_ptr, col_fill_stride); break;
+			case ImPlotScale_LogLog: RenderMarkers(get_mark, TransformerLogLog(), DrawList, marker, s.MarkerSize, s.RenderMarkerLine, col_outline_ptr, col_outline_stride, s.MarkerWeight, s.RenderMarkerFill, col_fill_ptr, col_fill_stride); break;
             }
         }
         EndItem();
@@ -1783,12 +1946,26 @@ void PlotVLines(const char* label_id, const T* xs, int count, int offset, int st
         ImDrawList& DrawList = *GetPlotDrawList();
         // render stems
         if (s.RenderLine) {
-            const ImU32 col_line = ImGui::GetColorU32(s.Colors[ImPlotCol_Line]);
+            const ImU32 static_col_line = ImGui::GetColorU32(s.Colors[ImPlotCol_Line]);
+            int col_line_stride;
+            const ImU32* col_line_ptr;
+
+            if (s.ColorsData[ImPlotCol_Line] == nullptr)
+            {
+                col_line_ptr = &static_col_line;
+                col_line_stride = 0;
+            }
+            else
+            {
+                col_line_ptr = s.ColorsData[ImPlotCol_Line];
+                col_line_stride = s.ColorsDataStride[ImPlotCol_Line];
+            }
+
             switch (GetCurrentScale()) {
-                case ImPlotScale_LinLin: RenderLineSegments(get_min, get_max, TransformerLinLin(), DrawList, s.LineWeight, col_line); break;
-                case ImPlotScale_LogLin: RenderLineSegments(get_min, get_max, TransformerLogLin(), DrawList, s.LineWeight, col_line); break;
-                case ImPlotScale_LinLog: RenderLineSegments(get_min, get_max, TransformerLinLog(), DrawList, s.LineWeight, col_line); break;
-                case ImPlotScale_LogLog: RenderLineSegments(get_min, get_max, TransformerLogLog(), DrawList, s.LineWeight, col_line); break;
+                case ImPlotScale_LinLin: RenderLineSegments(get_min, get_max, TransformerLinLin(), DrawList, s.LineWeight, col_line_ptr, col_line_stride); break;
+                case ImPlotScale_LogLin: RenderLineSegments(get_min, get_max, TransformerLogLin(), DrawList, s.LineWeight, col_line_ptr, col_line_stride); break;
+                case ImPlotScale_LinLog: RenderLineSegments(get_min, get_max, TransformerLinLog(), DrawList, s.LineWeight, col_line_ptr, col_line_stride); break;
+                case ImPlotScale_LogLog: RenderLineSegments(get_min, get_max, TransformerLogLog(), DrawList, s.LineWeight, col_line_ptr, col_line_stride); break;
             }
         }
         EndItem();
@@ -1821,12 +1998,26 @@ void PlotHLines(const char* label_id, const T* ys, int count, int offset, int st
         ImDrawList& DrawList = *GetPlotDrawList();
         // render stems
         if (s.RenderLine) {
-            const ImU32 col_line = ImGui::GetColorU32(s.Colors[ImPlotCol_Line]);
+            const ImU32 static_col_line = ImGui::GetColorU32(s.Colors[ImPlotCol_Line]);
+            int col_line_stride;
+            const ImU32* col_line_ptr;
+
+            if (s.ColorsData[ImPlotCol_Line] == nullptr)
+            {
+                col_line_ptr = &static_col_line;
+                col_line_stride = 0;
+            }
+            else
+            {
+                col_line_ptr = s.ColorsData[ImPlotCol_Line];
+                col_line_stride = s.ColorsDataStride[ImPlotCol_Line];
+            }
+
             switch (GetCurrentScale()) {
-                case ImPlotScale_LinLin: RenderLineSegments(get_min, get_max, TransformerLinLin(), DrawList, s.LineWeight, col_line); break;
-                case ImPlotScale_LogLin: RenderLineSegments(get_min, get_max, TransformerLogLin(), DrawList, s.LineWeight, col_line); break;
-                case ImPlotScale_LinLog: RenderLineSegments(get_min, get_max, TransformerLinLog(), DrawList, s.LineWeight, col_line); break;
-                case ImPlotScale_LogLog: RenderLineSegments(get_min, get_max, TransformerLogLog(), DrawList, s.LineWeight, col_line); break;
+                case ImPlotScale_LinLin: RenderLineSegments(get_min, get_max, TransformerLinLin(), DrawList, s.LineWeight, col_line_ptr, col_line_stride); break;
+                case ImPlotScale_LogLin: RenderLineSegments(get_min, get_max, TransformerLogLin(), DrawList, s.LineWeight, col_line_ptr, col_line_stride); break;
+                case ImPlotScale_LinLog: RenderLineSegments(get_min, get_max, TransformerLinLog(), DrawList, s.LineWeight, col_line_ptr, col_line_stride); break;
+                case ImPlotScale_LogLog: RenderLineSegments(get_min, get_max, TransformerLogLog(), DrawList, s.LineWeight, col_line_ptr, col_line_stride); break;
             }
         }
         EndItem();
